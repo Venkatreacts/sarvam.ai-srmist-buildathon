@@ -1,0 +1,8 @@
+.env
+backend/.cache/
+backend/runs/*
+!backend/runs/.gitkeep
+__pycache__/
+.pytest_cache/
+web/node_modules/
+web/.next/

@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "chaoslab-api",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "uvicorn", "chaoslab.server:app", "--app-dir", "backend", "--port", "8765"],
+      "port": 8765
+    },
+    {
+      "name": "chaoslab-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "web", "run", "dev", "--", "--port", "3100"],
+      "port": 3100
+    }
+  ]
+}

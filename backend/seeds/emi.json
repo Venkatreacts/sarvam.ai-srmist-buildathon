@@ -1,0 +1,14 @@
+[
+  {"id": "ta", "title": "Tamil customer, Chennai", "lang": "ta-IN",
+   "persona": "You are Senthil Kumar, the account holder. You are cooperative but busy.",
+   "truth": {"promise_amount": 4500, "promise_date": "2026-10-15"}},
+  {"id": "hi", "title": "Hindi customer, Lucknow", "lang": "hi-IN",
+   "persona": "You are Senthil Kumar, the account holder, settled in Lucknow for years. You are cooperative but busy.",
+   "truth": {"promise_amount": 6200, "promise_date": "2026-10-12"}},
+  {"id": "te", "title": "Telugu customer, Hyderabad", "lang": "te-IN",
+   "persona": "You are Senthil Kumar, the account holder, living in Hyderabad. You are cooperative but busy.",
+   "truth": {"promise_amount": 3750, "promise_date": "2026-10-18"}},
+  {"id": "kn", "title": "Kannada customer, Mysuru", "lang": "kn-IN",
+   "persona": "You are Senthil Kumar, the account holder, living in Mysuru. You are cooperative but busy.",
+   "truth": {"promise_amount": 8400, "promise_date": "2026-10-09"}}
+]

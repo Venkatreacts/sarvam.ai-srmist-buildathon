@@ -2,7 +2,7 @@
 
 ## 1. Idea Library reality check
 
-`Idea Library.xlsx` has 48 ideas. Row 2 is literally *"Voice Agent QA Platform: simulate thousands of
+`Idea Library.xlsx` has 50 ideas. Row 2 is literally *"Voice Agent QA Platform: simulate thousands of
 conversations… interruptions, noisy audio, policy violations… regression testing"*. Several teams will build it.
 And Sarvam already ships the average version of it: **Voice Agents → Tests** (simulated user + LLM judge +
 per-behaviour pass/fail, REST API at `apps.sarvam.ai/api/evals/v1/...`).

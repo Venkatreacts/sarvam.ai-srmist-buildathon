@@ -154,6 +154,10 @@ def _stream(kind: str, factory) -> StreamingResponse:
             except OSError:
                 pass
             await queue.put({"kind": "done", "run_id": run_id, "run": result})
+        except SarvamError as e:
+            msg = {402: "Sarvam credits exhausted (402). Top up the Sarvam wallet, then run again.",
+                   401: "Sarvam rejected the API key (401).", 403: "Sarvam denied access (403)."}.get(e.status, str(e))
+            await queue.put({"kind": "error", "message": msg})
         except Exception as e:
             await queue.put({"kind": "error", "message": f"{type(e).__name__}: {e}"})
         finally:

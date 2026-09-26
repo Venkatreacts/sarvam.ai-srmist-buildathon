@@ -126,3 +126,15 @@ def test_export_matches_sarvam_tests_shape():
     case = body["test_cases"][0]
     assert set(case) == {"name", "category", "user_scenario", "expected_behaviors"}
     assert "4500" in case["user_scenario"] and "Reply as JSON" not in case["user_scenario"]
+
+
+def test_billing_error_aborts_instead_of_scoring(tmp_path):
+    from chaoslab.sarvam import SarvamError
+
+    class Broke(FakeSarvam):
+        async def chat(self, *a, **k):
+            raise SarvamError(402, "No credits available")
+
+    import pytest
+    with pytest.raises(SarvamError):
+        asyncio.run(Runner(Broke(readback=True), tmp_path).run_case(SEED, (), CFG))

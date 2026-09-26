@@ -18,7 +18,7 @@ from .models import Conversation, Finding, Seed, Severity, Turn
 from .mutations import apply_truth, caller_brief, canonical, channel_for
 from .entities import script_share
 from .oracles import check_validity, evaluate
-from .sarvam import Sarvam
+from .sarvam import Sarvam, SarvamError
 from .target import Agent, AgentConfig
 
 CALLER_VOICES = ["kavitha", "anand", "priya", "rahul", "gokul", "shruti"]
@@ -127,6 +127,10 @@ class Runner:
                 caller_history.append({"role": "user", "content": text or "(silence)"})
                 if agent.backend.ended or c.get("done"):
                     break
+        except SarvamError as e:
+            if e.status in (401, 402, 403):  # account problems invalidate the whole run: stop, don't score
+                raise
+            conv.error = f"{type(e).__name__}: {e}"
         except Exception as e:  # a crashed conversation is a result too, never a silent pass
             conv.error = f"{type(e).__name__}: {e}"
         if conv.error is None:

@@ -53,11 +53,14 @@ class Turn(BaseModel):
     said: str | None = None                # what the caller actually said (ground truth text)
     heard: str | None = None               # what the agent received after the channel (ASR output)
     heard_clean: str | None = None         # ASR of the clean audio: the validity control for entity turns
+    heard_en: str | None = None            # instrument: Saaras translate of the audio the agent received
+    clean_en: str | None = None            # instrument: Saaras translate of the clean audio
     audio_said: str | None = None          # path to clean TTS audio
     audio_heard: str | None = None         # path to degraded audio fed to ASR
     entity_slots: list[str] = Field(default_factory=list)  # which truth fields this turn carried
     # agent turns
     text: str | None = None
+    text_en: str | None = None             # instrument: English translation, so spoken-word amounts are measurable
     tool_calls: list[ToolCall] = Field(default_factory=list)
     latency_ms: float | None = None
 

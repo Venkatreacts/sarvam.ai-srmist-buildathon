@@ -77,11 +77,19 @@ class Sarvam:
         return out
 
     async def chat_json(self, messages: list[dict], **kw) -> dict:
-        """Chat call that must return a JSON object. Falls back to reasoning_content if content is empty."""
-        out = await self.chat(messages, response_format={"type": "json_object"}, **kw)
-        msg = out["choices"][0]["message"]
-        raw = msg.get("content") or msg.get("reasoning_content") or ""
-        return _parse_json(raw)
+        """Chat call that must return a JSON object. Retries once if the reply holds no parseable object."""
+        last = ""
+        for _ in range(2):
+            out = await self.chat(messages, response_format={"type": "json_object"}, **kw)
+            msg = out["choices"][0]["message"]
+            for raw in (msg.get("content"), msg.get("reasoning_content")):
+                if raw:
+                    last = raw
+                    try:
+                        return _parse_json(raw)
+                    except ValueError:
+                        continue
+        raise ValueError(f"model did not return JSON: {last[:200]}")
 
     # ---------- TTS ----------
     async def tts(self, text: str, *, lang: str, speaker: str = "shubh", pace: float = 1.0,
@@ -96,6 +104,12 @@ class Sarvam:
         audio = base64.b64decode("".join(out["audios"]))
         path.write_bytes(audio)
         return audio
+
+    # ---------- Translate ----------
+    async def translate(self, text: str, *, source: str, target: str = "en-IN") -> str:
+        out = await self._post("/translate", json_body={"input": text[:2000], "source_language_code": source,
+                                                         "target_language_code": target, "model": "sarvam-translate:v1"})
+        return out.get("translated_text", "")
 
     # ---------- STT ----------
     async def stt(self, wav: bytes, *, lang: str = "unknown", model: str = "saaras:v3", mode: str = "transcribe",
@@ -116,11 +130,15 @@ def _hash(*parts: Any) -> str:
 
 
 def _parse_json(raw: str) -> dict:
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = raw.strip("`")
-        raw = raw[raw.find("{"):]
-    start, end = raw.find("{"), raw.rfind("}")
-    if start == -1 or end == -1:
-        raise ValueError(f"model did not return JSON: {raw[:200]}")
-    return json.loads(raw[start:end + 1])
+    """First complete JSON object in the text (models sometimes add prose or a second object after it)."""
+    dec = json.JSONDecoder()
+    i = raw.find("{")
+    while i != -1:
+        try:
+            obj, _ = dec.raw_decode(raw, i)
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+        i = raw.find("{", i + 1)
+    raise ValueError(f"model did not return JSON: {raw[:200]}")

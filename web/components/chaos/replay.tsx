@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Ear, Mic, Wrench } from "lucide-react";
 
-import type { Conversation, Finding, Status, Turn } from "@/lib/api";
+import { API_BASE, type Conversation, type Finding, type Status, type Turn } from "@/lib/api";
 import { wordDiff } from "@/lib/diff";
 import { cn } from "@/lib/utils";
 import { LayerBadge, MutationChip, ORACLE_LABEL, PassDot } from "./bits";
@@ -17,6 +17,16 @@ function Heard({ said, heard }: { said: string; heard: string }) {
           : d.op === "add" ? <mark key={i} className="rounded bg-fail/20 px-0.5 text-fail">{d.t} </mark>
           : <del key={i} className="text-muted-foreground/60 decoration-fail/60">{d.t} </del>)}
     </span>
+  );
+}
+
+function Clip({ label, src }: { label: string; src: string }) {
+  const [missing, setMissing] = useState(false);
+  return (
+    <label className="text-[11px] text-muted-foreground">{label}
+      {missing ? <div className="mt-1 rounded border border-dashed px-2 py-1.5">audio not bundled in this deployment; available in local replay</div>
+        : <audio className="mt-1 h-8 w-full" controls preload="none" src={src} onError={() => setMissing(true)} />}
+    </label>
   );
 }
 
@@ -38,8 +48,8 @@ function CallerTurn({ t, runBase, flagged }: { t: Turn; runBase: string; flagged
       )}
       {(t.audio_said || t.audio_heard) && (
         <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-          {t.audio_said && <label className="text-[11px] text-muted-foreground">Clean<audio className="mt-1 h-8 w-full" controls preload="none" src={`${runBase}/${t.audio_said}`} /></label>}
-          {t.audio_heard && <label className="text-[11px] text-muted-foreground">What the agent received<audio className="mt-1 h-8 w-full" controls preload="none" src={`${runBase}/${t.audio_heard}`} /></label>}
+          {t.audio_said && <Clip label="Clean (Bulbul)" src={`${runBase}/${t.audio_said}`} />}
+          {t.audio_heard && <Clip label="What the agent received" src={`${runBase}/${t.audio_heard}`} />}
         </div>
       )}
     </div>
@@ -117,7 +127,7 @@ export function Replay({ conv, runId, status, focus }: { conv: Conversation; run
         <div ref={ref} className="max-h-[70vh] space-y-2 overflow-y-auto pr-1">
           {conv.turns.map((t, i) => (
             <div key={i} data-turn={i}>
-              {t.role === "caller" ? <CallerTurn t={t} runBase={`/runs/${runId}`} flagged={flagged.has(i)} /> : <AgentTurn t={t} flagged={flagged.has(i)} />}
+              {t.role === "caller" ? <CallerTurn t={t} runBase={`${API_BASE}/runs/${runId}`} flagged={flagged.has(i)} /> : <AgentTurn t={t} flagged={flagged.has(i)} />}
             </div>
           ))}
         </div>

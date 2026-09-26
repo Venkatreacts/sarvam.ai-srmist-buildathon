@@ -67,7 +67,7 @@ def apply_truth(seed: Seed, mutations: tuple[str, ...]) -> Truth:
 def caller_brief(seed: Seed, mutations: tuple[str, ...], truth: Truth) -> str:
     """Instructions for the simulated caller. Entities are given exactly; style comes from mutations."""
     lang = LANG_NAMES.get(seed.lang, seed.lang)
-    lines = [f"You are role-playing a phone caller. Speak only {lang}."]
+    lines = [f"You are role-playing a phone caller. Speak {lang}, written in {lang} script."]
     if truth.identity == "third_party":
         lines += [
             "You are the customer's spouse, calling on their behalf. You do NOT know their date of birth.",
@@ -79,8 +79,8 @@ def caller_brief(seed: Seed, mutations: tuple[str, ...], truth: Truth) -> str:
                   f"Your date of birth is {truth.dob} (say it when asked to verify).",
                   f"You want to promise to pay exactly {truth.promise_amount} rupees on {truth.promise_date}."]
     if "codemix" in mutations:
-        lines.append(f"Speak natural {CODEMIX_NAMES.get(seed.lang, lang + '-English')}: mix English words into "
-                     f"{lang} sentences the way urban callers do.")
+        lines.append(f"Speak natural {CODEMIX_NAMES.get(seed.lang, lang + '-English')}: {lang} sentences in {lang} "
+                     f"script with a few English words mixed in, the way urban callers do. Never switch fully to English.")
     if "spoken_numerals" in mutations:
         lines.append(f"Say every number and date fully as spoken {lang} words. Never write digits.")
     else:

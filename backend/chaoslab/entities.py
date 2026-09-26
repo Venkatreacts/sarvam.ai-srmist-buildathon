@@ -71,3 +71,44 @@ def script_share(text: str, lang: str) -> float | None:
 
 def iso(d: date) -> str:
     return d.isoformat()
+
+
+_UNITS = {w: i for i, w in enumerate("zero one two three four five six seven eight nine ten eleven twelve thirteen "
+                                     "fourteen fifteen sixteen seventeen eighteen nineteen".split())}
+_TENS = {w: 10 * (i + 2) for i, w in enumerate("twenty thirty forty fifty sixty seventy eighty ninety".split())}
+_SCALES = {"hundred": 100, "thousand": 1000, "lakh": 100000, "lakhs": 100000, "lac": 100000,
+           "crore": 10000000, "crores": 10000000, "million": 1000000}
+
+
+def english_number_words(text: str) -> list[int]:
+    """'four thousand five hundred' -> 4500, 'twelve thousand four hundred and fifty' -> 12450.
+    Used on Saaras translate-mode output, which renders spoken Indic numbers as English words."""
+    toks = re.findall(r"[a-z]+|\d[\d,]*", (text or "").lower().replace("-", " "))
+    out, total, cur, active = [], 0, 0, False
+    for t in toks + ["<end>"]:
+        if t in _UNITS or t in _TENS:
+            cur += _UNITS.get(t, 0) + _TENS.get(t, 0)
+            active = True
+        elif t in _SCALES and active:
+            if _SCALES[t] == 100:
+                cur *= 100
+            else:
+                total += cur * _SCALES[t]
+                cur = 0
+        elif t == "and" and active:
+            continue
+        else:
+            if active:
+                out.append(total + cur)
+            total, cur, active = 0, 0, False
+    return out
+
+
+def amounts_in(*texts: str | None) -> set[int]:
+    """Every amount mentioned in any of the texts, as digits (incl. native digits) or English number words."""
+    found: set[int] = set()
+    for t in texts:
+        if t:
+            found.update(extract_numbers(t))
+            found.update(english_number_words(t))
+    return found

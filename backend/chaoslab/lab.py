@@ -81,9 +81,11 @@ class Lab:
             if key not in self.probe_cache:
                 self.probe_cache[key] = await asyncio.gather(
                     *[self.runner.run_case(seed, muts, cfg, repetition=100 + r) for r in range(trials)])
-            fails = [oracle in failing_oracles(c) for c in self.probe_cache[key]]
-            await self.emit("probe", case_id=case_id(seed.id, muts), oracle=oracle, fails=sum(fails), trials=trials)
-            return majority(fails)
+            valid = [c for c in self.probe_cache[key] if not (c.error or "").startswith("INVALID")]
+            fails = [oracle in failing_oracles(c) for c in valid]
+            await self.emit("probe", case_id=case_id(seed.id, muts), oracle=oracle, fails=sum(fails), trials=len(valid))
+            # an invalid simulation is no evidence either way; decide on the valid trials only
+            return bool(fails) and majority(fails)
 
         # confirm the failure is reproducible before paying for a search
         if not await probe(canonical(conv.mutations)):

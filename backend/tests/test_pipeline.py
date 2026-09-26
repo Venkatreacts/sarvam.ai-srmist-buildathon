@@ -72,6 +72,9 @@ class FakeSarvam:
             text = text.replace("4,500", "45,000")
         return {"transcript": text}
 
+    async def translate(self, text, source, target="en-IN"):
+        return text
+
     def _msg(self, content):
         return {"_latency_ms": 5.0, "choices": [{"message": {"content": content}}]}
 

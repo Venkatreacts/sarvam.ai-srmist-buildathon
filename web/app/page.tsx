@@ -27,9 +27,11 @@ export default function Page() {
   const [runs, setRuns] = useState<RunListItem[]>([]);
   const [attackRun, setAttackRun] = useState<Run | null>(null);
   const [retestRun, setRetestRun] = useState<Run | null>(null);
+  const [retests, setRetests] = useState<Run[]>([]);
+  const [configs, setConfigs] = useState<Record<string, unknown>>({});
   const [version, setVersion] = useState("v1");
   const [scope, setScope] = useState<"ta" | "all">("ta");
-  const [live, setLive] = useState<{ runId: string; kind: "attack" | "retest"; events: LabEvent[] } | null>(null);
+  const [live, setLive] = useState<{ kind: "attack" | "retest"; events: LabEvent[] } | null>(null);
   const [replay, setReplay] = useState<{ run: Run; caseId: string; oracle?: string } | null>(null);
   const [proposal, setProposal] = useState<Awaited<ReturnType<typeof api.remediate>> | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -46,47 +48,50 @@ export default function Page() {
     Promise.all([api.status(), api.runs()]).then(async ([s, r]) => {
       setStatus(s);
       setRuns(r);
+      // real Sarvam runs first; the offline fixture only if nothing real exists
       const a = r.find((x) => x.kind === "attack") ?? r.find((x) => x.kind === "fixture" && !x.baseline_run);
       if (a) setAttackRun(await api.run(a.id));
-      const b = r.find((x) => x.baseline_run && x.baseline_run === a?.id);
-      if (b) setRetestRun(await api.run(b.id));
+      // every retest of this attack, newest agent version first
+      const bs = r.filter((x) => x.baseline_run && x.baseline_run === a?.id).sort((x, y) => y.version.localeCompare(x.version));
+      const loaded = await Promise.all(bs.map((b) => api.run(b.id)));
+      setRetests(loaded);
+      if (loaded[0]) setRetestRun(loaded[0]);
     }).catch((e) => setError(String(e)));
   }, []);
-
-  useEffect(() => {
-    if (!live) return;
-    return api.events(live.runId, async (e) => {
-      setLive((l) => (l ? { ...l, events: [...l.events, e] } : l));
-      if (e.kind === "done") {
-        const run = await api.run(e.run_id);
-        if (live.kind === "attack") { setAttackRun(run); setRetestRun(null); setProposal(null); }
-        else setRetestRun(run);
-        refresh();
-      }
-      if (e.kind === "error") setError(e.message);
-    });
-  }, [live?.runId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const guard = async (label: string, fn: () => Promise<void>) => {
     setBusy(label); setError(null);
     try { await fn(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(null); }
   };
 
+  const onEvent = (kind: "attack" | "retest") => (e: LabEvent) => {
+    setLive((l) => (l ? { ...l, events: [...l.events, e] } : l));
+    if (e.kind === "done") {
+      if (kind === "attack") { setAttackRun(e.run); setRetestRun(null); setRetests([]); setProposal(null); }
+      else { setRetestRun(e.run); setRetests((rs) => [e.run, ...rs.filter((x) => x.version !== e.run.version)]); }
+      refresh().catch(() => {});
+    }
+    if (e.kind === "error") setError(e.message);
+  };
+
   const startAttack = () => guard("attack", async () => {
-    const { run_id } = await api.attack(version, scope === "all" ? undefined : [scope]);
-    setLive({ runId: run_id, kind: "attack", events: [] });
+    setLive({ kind: "attack", events: [] });
     setSection("attack");
+    await api.attack(version, scope === "all" ? undefined : [scope], onEvent("attack"));
   });
+  // the loop continues from the latest evidence: a retest's failures feed the next fix
+  const fixSource = retestRun && retestRun.summary.pass.rate !== 1 ? retestRun : attackRun;
   const propose = () => guard("remediate", async () => {
-    if (!attackRun) return;
-    const p = await api.remediate(attackRun.id);
+    if (!fixSource) return;
+    const p = await api.remediate(fixSource, configs[fixSource.version]);
+    setConfigs((c) => ({ ...c, [p.version]: p.config }));
     setProposal(p);
     await refresh();
   });
   const retest = (v: string) => guard("retest", async () => {
     if (!attackRun) return;
-    const { run_id } = await api.retest(attackRun.id, v);
-    setLive({ runId: run_id, kind: "retest", events: [] });
+    setLive({ kind: "retest", events: [] });
+    await api.retest(attackRun, v, configs[v], onEvent("retest"));
   });
 
   const liveCases = useMemo(() => live?.events.find((e) => e.kind === "plan")?.cases ?? [], [live]);
@@ -147,7 +152,7 @@ export default function Page() {
           </div>
           <div className="ml-auto flex items-center gap-2">
             {attackRun && <a href={api.exportUrl(attackRun.id)} target="_blank" className="inline-flex h-8 items-center gap-1.5 rounded-md border px-3 text-xs text-muted-foreground hover:text-foreground"><Download className="size-3.5" /> Export to Sarvam Tests</a>}
-            <Button onClick={startAttack} disabled={!!busy || (!!live && !liveDone) || !status?.sarvam_key} className="bg-chaos text-black hover:bg-chaos/90">
+            <Button onClick={startAttack} disabled={!!busy || (!!live && !liveDone) || !status?.sarvam_key || !status?.live} className="bg-chaos text-black hover:bg-chaos/90">
               {busy === "attack" || (live?.kind === "attack" && !liveDone) ? <Loader2 className="size-4 animate-spin" /> : <Zap className="size-4" />} Attack agent {version}
             </Button>
           </div>
@@ -156,10 +161,31 @@ export default function Page() {
         {error && <div className="mb-6 flex items-start gap-2 rounded-lg border border-fail/40 bg-fail/10 px-4 py-3 text-sm text-fail"><AlertTriangle className="mt-0.5 size-4 shrink-0" /> {error}</div>}
         {!status?.sarvam_key && status && <div className="mb-6 rounded-lg border border-warn/40 bg-warn/10 px-4 py-3 text-sm text-warn">SARVAM_API_KEY is not set on the backend. Add it to <span className="font-mono">.env</span> and restart the API to run live attacks.</div>}
         {isFixture && <div className="mb-6 rounded-lg border border-warn/40 bg-warn/10 px-4 py-3 text-sm text-warn">Showing an offline fixture produced by the scripted test double. These are not Sarvam results; run a live attack to replace it.</div>}
+        {attackRun?.source === "recorded" && !(live && !liveDone) && (
+          <div className="mb-6 flex flex-wrap items-center gap-2 rounded-lg border px-4 py-2.5 text-xs text-muted-foreground">
+            <span className="size-1.5 rounded-full bg-pass" />
+            Replaying a recorded <span className="text-foreground">live Sarvam run</span> from {new Date(attackRun.created * 1000).toLocaleString()}. Every number comes from real Sarvam calls. Press Attack agent to run a new one.
+          </div>
+        )}
+        {attackRun?.source === "live" && attackRun.kind !== "fixture" && !(live && !liveDone) && (
+          <div className="mb-6 flex items-center gap-2 rounded-lg border border-pass/30 px-4 py-2.5 text-xs text-pass"><span className="size-1.5 animate-pulse rounded-full bg-pass" /> Live Sarvam run · {new Date(attackRun.created * 1000).toLocaleString()}</div>
+        )}
 
         {section === "overview" && (
           <div className="space-y-8">
             <SectionTitle title="Overview" desc="Every call goes through the real voice loop. Failures are pinned to the layer that caused them, minimised to their smallest trigger, and kept as regression tests." />
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div className="rounded-lg border p-4">
+                <div className="text-xs font-medium text-muted-foreground">Standard voice-agent testing (e.g. Sarvam Tests)</div>
+                <div className="mt-2 font-mono text-xs">defined scenario → run → grade</div>
+                <p className="mt-2 text-xs text-muted-foreground">You find the failures you thought to write down. Sarvam ships this natively.</p>
+              </div>
+              <div className="rounded-lg border border-chaos/40 bg-chaos/5 p-4">
+                <div className="text-xs font-medium text-chaos">Indic Chaos Lab</div>
+                <div className="mt-2 font-mono text-xs">seed → mutate → acoustic stress → execute → discover → minimise → attribute → regression test</div>
+                <p className="mt-2 text-xs text-muted-foreground">Finds the edge cases you didn&apos;t think to test, proves the smallest trigger and the broken layer, and exports them back to Sarvam Tests.</p>
+              </div>
+            </div>
             <div className="flex flex-wrap items-center gap-1.5 text-xs">
               {PIPELINE.map((p, i) => (
                 <span key={p} className="flex items-center gap-1.5">
@@ -229,6 +255,8 @@ export default function Page() {
             <SectionTitle title="Failure clusters" desc="Failures grouped by oracle, blamed layer and minimal trigger. Transfer shows whether the same minimal trigger breaks the other languages." />
             {attackRun?.clusters?.length ? attackRun.clusters.map((c) => {
               const t = attackRun.transfer?.find((x) => x.cluster === c.id);
+              const rep = attackRun.conversations.find((x) => x.case_id === c.members[0] && !x.repetition);
+              const f = rep?.findings.find((x) => x.oracle === c.oracle && !x.passed);
               return (
                 <div key={c.id} className="rounded-lg border bg-card p-4">
                   <div className="flex flex-wrap items-center gap-2">
@@ -242,6 +270,12 @@ export default function Page() {
                     {c.minimal.length ? c.minimal.map((m) => <MutationChip key={m} id={m} info={status?.mutations[m]} />) : <span>none (baseline bug)</span>}
                     <span className="ml-3 text-muted-foreground">found on</span> {c.seeds.map((s) => <span key={s} className="rounded bg-muted px-1.5 font-mono">{s}</span>)}
                   </div>
+                  {f && (
+                    <div className="mt-3 grid gap-2 text-xs md:grid-cols-2">
+                      <div className="rounded-md bg-muted/50 px-3 py-2"><span className="text-muted-foreground">Root cause · </span>{c.layer ? LAYER_HELP[c.layer] : ""} <span className="text-fail">{f.actual}</span></div>
+                      {f.recommended_fix && <div className="rounded-md bg-pass/10 px-3 py-2 text-pass"><span className="opacity-70">Recommended fix · </span>{f.recommended_fix}</div>}
+                    </div>
+                  )}
                   {t && (
                     <div className="mt-3 grid grid-cols-[170px_1fr] items-center gap-3 text-xs">
                       <span className="text-muted-foreground">Transfers to other languages</span>
@@ -271,11 +305,11 @@ export default function Page() {
             {!attackRun ? <Empty>Run an attack first.</Empty> : (
               <>
                 <div className="flex flex-wrap items-center gap-2">
-                  <Button onClick={propose} disabled={!!busy || !attackRun.clusters?.length || !status?.sarvam_key} variant="outline">
-                    {busy === "remediate" ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />} Propose fix for {attackRun.version}
+                  <Button onClick={propose} disabled={!!busy || !fixSource || !status?.sarvam_key || !status?.live} variant="outline">
+                    {busy === "remediate" ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />} Propose fix from {fixSource?.version} evidence
                   </Button>
                   {(proposal?.version || status?.agents.filter((v) => v !== attackRun.version).at(-1)) && (
-                    <Button onClick={() => retest(proposal?.version ?? status!.agents.filter((v) => v !== attackRun.version).at(-1)!)} disabled={!!busy || (!!live && !liveDone) || !status?.sarvam_key} className="bg-chaos text-black hover:bg-chaos/90">
+                    <Button onClick={() => retest(proposal?.version ?? status!.agents.filter((v) => v !== attackRun.version).at(-1)!)} disabled={!!busy || (!!live && !liveDone) || !status?.sarvam_key || !status?.live} className="bg-chaos text-black hover:bg-chaos/90">
                       {live?.kind === "retest" && !liveDone ? <Loader2 className="size-4 animate-spin" /> : <GitCompareArrows className="size-4" />}
                       Re-run same suite on {proposal?.version ?? status!.agents.filter((v) => v !== attackRun.version).at(-1)}
                     </Button>
@@ -286,7 +320,19 @@ export default function Page() {
                   <div className="rounded-lg border bg-card p-4">
                     <div className="text-sm font-medium">Proposed {proposal.version}</div>
                     {proposal.structural.gate_tools_on_verification && <div className="mt-2 text-xs text-pass">+ tool backend: get_outstanding and record_promise_to_pay now refuse until verify_customer succeeds</div>}
+                    {proposal.structural.pin_language && <div className="mt-1 text-xs text-pass">+ agent config: the call language is pinned instead of inferred</div>}
                     <pre className="mt-2 overflow-x-auto whitespace-pre-wrap font-mono text-xs text-pass">{proposal.rules.map((r) => `+ ${r}`).join("\n")}</pre>
+                  </div>
+                )}
+                {retests.length > 1 && (
+                  <div className="flex items-center gap-1 text-xs">
+                    <span className="mr-1 text-muted-foreground">Compare {attackRun.version} with</span>
+                    {[...retests].sort((x, y) => x.version.localeCompare(y.version)).map((r) => (
+                      <button key={r.id} onClick={() => setRetestRun(r)}
+                        className={cn("rounded-md border px-2.5 py-1 font-mono", retestRun?.id === r.id ? "border-foreground/40 bg-accent text-foreground" : "text-muted-foreground hover:text-foreground")}>
+                        {r.version}{r.comparison?.regressed.length ? <span className="ml-1.5 text-fail">{r.comparison.regressed.length} regressed</span> : null}
+                      </button>
+                    ))}
                   </div>
                 )}
                 {retestRun?.comparison ? (

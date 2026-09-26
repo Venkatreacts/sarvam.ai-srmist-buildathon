@@ -41,6 +41,7 @@ class AgentConfig:
     version: str
     system_prompt: str
     gate_tools_on_verification: bool = False   # server-side enforcement, not just a prompt instruction
+    pin_language: bool = False                 # state the campaign language instead of hoping the model infers it
     model: str = "sarvam-105b-conversations"
     temperature: float = 0.5
     # the agent's ear is part of the agent: remediation can target it too
@@ -81,11 +82,16 @@ class Backend:
 
 
 class Agent:
-    def __init__(self, cfg: AgentConfig, client: Sarvam, today: str = "2026-09-26"):
+    def __init__(self, cfg: AgentConfig, client: Sarvam, today: str = "2026-09-26", lang: str | None = None):
         self.cfg = cfg
         self.client = client
         self.backend = Backend(gate=cfg.gate_tools_on_verification)
         system = cfg.system_prompt.format(today=today, **ACCOUNT)
+        if cfg.pin_language and lang:
+            from .mutations import LANG_NAMES
+            name = LANG_NAMES.get(lang, lang)
+            system += (f"\n\nThis call is in {name}. Speak {name}, written in {name} script, on every turn. "
+                       f"English words the customer uses are fine; never switch to another language.")
         self.messages: list[dict] = [{"role": "system", "content": system}]
 
     async def respond(self, heard: str) -> tuple[str, list[ToolCall], float]:
@@ -113,4 +119,6 @@ class Agent:
                 calls.append(ToolCall(name=fn["name"], args=args, result=result))
                 self.messages.append({"role": "tool", "tool_call_id": tc["id"],
                                       "content": json.dumps(result)})
+            if self.backend.ended:  # the call is over; don't let the model keep talking to a dead line
+                return (msg.get("content") or "").strip(), calls, latency
         return "", calls, latency

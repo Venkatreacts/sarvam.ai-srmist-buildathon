@@ -38,6 +38,7 @@ export interface Comparison {
 }
 
 export interface Run {
+  source?: "recorded" | "live";
   id: string; kind: "attack" | "retest" | "fixture"; version: string; created: number;
   conversations: Conversation[]; summary: Summary;
   shrinks?: Shrink[]; clusters?: Cluster[]; transfer?: Transfer[];
@@ -45,11 +46,11 @@ export interface Run {
   baseline_run?: string; comparison?: Comparison; regression_suite_results?: { case_id: string; passed: boolean }[];
 }
 
-export interface RunListItem { id: string; kind: Run["kind"]; version: string; created: number; summary: Summary; baseline_run?: string }
+export interface RunListItem { source?: "recorded" | "live"; id: string; kind: Run["kind"]; version: string; created: number; summary: Summary; baseline_run?: string }
 
 export interface MutationInfo { id: string; kind: string; label: string; description: string }
 export interface SeedInfo { id: string; title: string; lang: string; truth: { promise_amount: number; promise_date: string } }
-export interface Status { sarvam_key: boolean; agents: string[]; seeds: SeedInfo[]; mutations: Record<string, MutationInfo> }
+export interface Status { live: boolean; sarvam_key: boolean; agents: string[]; seeds: SeedInfo[]; mutations: Record<string, MutationInfo> }
 
 export type LabEvent =
   | { kind: "plan"; cases: string[]; version: string }
@@ -58,8 +59,13 @@ export type LabEvent =
   | { kind: "probe"; case_id: string; oracle: string; fails: number; trials: number }
   | { kind: "shrink_done"; case_id: string; oracle: string; minimal: string[]; probes: number }
   | { kind: "shrink_flaky"; case_id: string; oracle: string }
-  | { kind: "done"; run_id: string }
-  | { kind: "error"; message: string };
+  | { kind: "done"; run_id: string; run: Run }
+  | { kind: "error"; message: string }
+  | { kind: "heartbeat" };
+
+/** API origin. Empty = same origin (local dev via Next rewrites). Public URL only; the Sarvam key never reaches the browser. */
+export const API_BASE = (process.env.NEXT_PUBLIC_CHAOSLAB_API ?? "").replace(/\/$/, "");
+const u = (path: string) => `${API_BASE}${path}`;
 
 async function j<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -71,22 +77,47 @@ async function j<T>(res: Response): Promise<T> {
 }
 
 export const api = {
-  status: () => fetch("/api/status").then(j<Status>),
-  runs: () => fetch("/api/runs").then(j<RunListItem[]>),
-  run: (id: string) => fetch(`/api/runs/${id}`).then(j<Run>),
-  agent: (v: string) => fetch(`/api/agents/${v}`).then(j<{ version: string; system_prompt: string; gate_tools_on_verification: boolean }>),
-  attack: (version: string, seeds?: string[]) =>
-    fetch("/api/attack", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ version, seeds }) }).then(j<{ run_id: string }>),
-  retest: (baseline_run: string, version: string) =>
-    fetch("/api/retest", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ baseline_run, version }) }).then(j<{ run_id: string }>),
-  remediate: (runId: string) =>
-    fetch(`/api/remediate/${runId}`, { method: "POST" }).then(j<{ version: string; rules: string[]; rationale: Record<string, string>; structural: { gate_tools_on_verification: boolean } }>),
-  events: (runId: string, onEvent: (e: LabEvent) => void) => {
-    const es = new EventSource(`/api/runs/${runId}/events`);
-    es.onmessage = (m) => onEvent(JSON.parse(m.data));
-    return () => es.close();
-  },
-  exportUrl: (runId: string) => `/api/runs/${runId}/sarvam-tests`,
+  status: () => fetch(u("/api/status")).then(j<Status>),
+  runs: () => fetch(u("/api/runs")).then(j<RunListItem[]>),
+  run: (id: string) => fetch(u(`/api/runs/${id}`)).then(j<Run>),
+  agent: (v: string) => fetch(u(`/api/agents/${v}`)).then(j<{ version: string; system_prompt: string; gate_tools_on_verification: boolean }>),
+  attack: (version: string, seeds: string[] | undefined, onEvent: (e: LabEvent) => void) =>
+    stream("/api/attack", { version, seeds }, onEvent),
+  retest: (baseline: Run, version: string, config: unknown, onEvent: (e: LabEvent) => void) =>
+    stream("/api/retest", { baseline_run: baseline.id, baseline, version, config }, onEvent),
+  remediate: (run: Run, config?: unknown) =>
+    fetch(u(`/api/remediate/${run.id}`), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ run, config }) })
+      .then(j<{ version: string; rules: string[]; rationale: Record<string, string>; structural: { gate_tools_on_verification: boolean; pin_language?: boolean }; config: unknown }>),
+  exportUrl: (runId: string) => u(`/api/runs/${runId}/sarvam-tests`),
 };
 
 export const pct = (r: number | null | undefined) => (r == null ? "—" : `${Math.round(r * 100)}%`);
+
+/** POST and read an NDJSON event stream. The job runs inside the request, so it works on serverless too. */
+async function stream(url: string, body: unknown, onEvent: (e: LabEvent) => void): Promise<void> {
+  const res = await fetch(u(url), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!res.ok || !res.body) {
+    let msg = res.statusText;
+    try { msg = (await res.json()).detail ?? msg; } catch {}
+    throw new Error(`${res.status}: ${msg}`);
+  }
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  let finished = false;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      const ev = JSON.parse(line) as LabEvent;
+      if (ev.kind === "done" || ev.kind === "error") finished = true;
+      if (ev.kind !== "heartbeat") onEvent(ev);
+    }
+  }
+  if (!finished) onEvent({ kind: "error", message: "The connection closed before the run finished (server time limit?)." });
+}

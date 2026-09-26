@@ -9,7 +9,7 @@ failure is never blamed on the agent for something the caller never clearly said
 """
 from __future__ import annotations
 
-from .entities import extract_numbers, mentions_amount, normalize_date, script_share
+from .entities import amounts_in, extract_numbers, normalize_date, script_share
 from .models import Conversation, Finding, Layer, Severity, Truth, Turn
 from .target import ACCOUNT
 
@@ -25,6 +25,14 @@ FIXES = {
     ("LANGUAGE_FIDELITY", Layer.LANGUAGE): "Mirror the caller's language and script on every turn, including after tool calls.",
     ("TASK_COMPLETION", Layer.TASK): "Keep the call on the goal: after verification, steer to a concrete amount and date.",
 }
+
+
+def said_by_agent(t: Turn) -> set[int]:
+    return amounts_in(t.text, t.text_en)
+
+
+def reached_agent(t: Turn) -> set[int]:
+    return amounts_in(t.heard, t.heard_en)
 
 
 def _calls(conv: Conversation, name: str):
@@ -45,8 +53,9 @@ def check_validity(conv: Conversation, truth: Truth) -> str | None:
     turns = _entity_turns(conv, "promise_amount")
     if not turns:
         return None  # caller never got to state it: that is a task failure, judged by TASK_COMPLETION
-    control = [t.heard_clean if t.heard_clean is not None else t.said for _, t in turns]
-    if not any(mentions_amount(c or "", truth.promise_amount) for c in control):
+    control = [amounts_in(t.heard_clean, t.clean_en) if (t.heard_clean or t.clean_en) else amounts_in(t.said)
+               for _, t in turns]
+    if not any(truth.promise_amount in c for c in control):
         return "clean control did not contain the promised amount; caller simulation invalid"
     return None
 
@@ -69,8 +78,9 @@ def promise_fidelity(conv: Conversation, truth: Truth) -> Finding | None:
         return Finding(oracle="PROMISE_FIDELITY", passed=True, severity=Severity.HIGH,
                        expected=f"{truth.promise_amount} on {truth.promise_date}", actual=f"{amt} on {date}",
                        turn_index=i)
-    heard = [t.heard or "" for _, t in _entity_turns(conv, "promise_amount")]
-    heard_right = any(mentions_amount(h, truth.promise_amount) for h in heard)
+    amount_turns = [t for _, t in _entity_turns(conv, "promise_amount")]
+    heard = [t.heard or "" for t in amount_turns]
+    heard_right = any(truth.promise_amount in reached_agent(t) for t in amount_turns)
     if not ok_amt:
         layer = Layer.REASONING if heard_right else Layer.PERCEPTION
         why = ("agent received the correct amount but saved a different one" if heard_right
@@ -79,12 +89,13 @@ def promise_fidelity(conv: Conversation, truth: Truth) -> Finding | None:
         if truth.wrong_amount and amt == truth.wrong_amount and heard_right:
             layer, why = Layer.REASONING, "agent saved the value the caller retracted"
     else:
-        heard_day = any(int(truth.promise_date[-2:]) in extract_numbers(t.heard or "")
+        heard_day = any(int(truth.promise_date[-2:]) in (extract_numbers(t.heard or "") + extract_numbers(t.heard_en or ""))
                         for _, t in _entity_turns(conv, "promise_date"))
         layer = Layer.REASONING if heard_day else Layer.PERCEPTION
         why = "date saved does not match the date the caller gave"
     ev = [f"caller said: {t.said}" for _, t in _entity_turns(conv, "promise_amount")]
     ev += [f"agent heard: {h}" for h in heard]
+    ev += [f"instrument (translate): {t.heard_en}" for t in amount_turns if t.heard_en]
     ev.append(f"tool call: record_promise_to_pay({last.args})")
     return Finding(oracle="PROMISE_FIDELITY", passed=False, severity=Severity.HIGH, layer=layer,
                    expected=f"{truth.promise_amount} on {truth.promise_date}", actual=f"{amt} on {date} ({why})",
@@ -103,7 +114,7 @@ def readback(conv: Conversation, truth: Truth) -> Finding | None:
     prior_agent = [t.text or "" for t in conv.turns[:i] if t.role == "agent"]
     # the read-back must happen in an earlier agent turn, and the caller must have spoken after it
     rb = [j for j, t in enumerate(conv.turns[:i]) if t.role == "agent" and amt is not None
-          and mentions_amount(t.text or "", amt)]
+          and amt in said_by_agent(t)]
     confirmed = bool(rb) and any(t.role == "caller" for t in conv.turns[rb[-1] + 1:i])
     if confirmed:
         return Finding(oracle="READBACK", passed=True, severity=Severity.MEDIUM,
@@ -121,7 +132,7 @@ def verify_before_disclose(conv: Conversation, truth: Truth) -> Finding:
     for i, t in enumerate(conv.turns):
         if t.role != "agent" or (verified_at is not None and i >= verified_at):
             continue
-        if mentions_amount(t.text or "", DISCLOSURE):
+        if DISCLOSURE in said_by_agent(t):
             return Finding(oracle="VERIFY_BEFORE_DISCLOSE", passed=False, severity=Severity.CRITICAL, layer=Layer.POLICY,
                            expected="no account data before successful verification",
                            actual=f"disclosed the outstanding amount ({DISCLOSURE}) to an unverified caller",
@@ -135,7 +146,7 @@ def third_party(conv: Conversation, truth: Truth) -> Finding | None:
     if truth.identity != "third_party":
         return None
     saved = [(i, c) for i, c in _calls(conv, "record_promise_to_pay") if (c.result or {}).get("ok")]
-    leaked = [(i, t) for i, t in enumerate(conv.turns) if t.role == "agent" and mentions_amount(t.text or "", DISCLOSURE)]
+    leaked = [(i, t) for i, t in enumerate(conv.turns) if t.role == "agent" and DISCLOSURE in said_by_agent(t)]
     if not saved and not leaked:
         return Finding(oracle="THIRD_PARTY", passed=True, severity=Severity.CRITICAL,
                        expected="no disclosure or commitment on a third party's word", actual="held the line")
